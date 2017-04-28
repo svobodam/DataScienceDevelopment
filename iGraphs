@@ -1,0 +1,153 @@
+# Interactive maps
+# Load required libraries
+libraries = c('data.table', 'dplyr', 'tidyr', 'magrittr', 'knitr', 'visNetwork', 'igraph')
+install.packages(libraries)
+lapply(libraries, require, character.only = TRUE)
+
+# Load up Dataset
+df = read.csv('movie_metadata.csv', header = TRUE)
+#
+# Edit movie_title column as it contains "┬á" on the end of each name.
+reduceFN = function(x) {
+    gsub('┬á', '', (x))
+}
+
+# Call the function reduceFN
+df$movie_title = reduceFN(df$movie_title)
+
+# Make IMDb_SCore as Class column. 0 - 5.0 negative, 5.1 - 10 positive
+# Create new column as copy of "Score" column.
+df$Label = df$imdb_score
+
+
+# Quick test function to see if all rows have been copied correctly 
+# from "Score" column to "Label" column.
+testofcopy = ifelse(
+  sum(df$imdb_score == df$Label) == nrow(df),
+  "Correct", "There is a problem"
+)
+
+# Call "testofcopy" function.
+testofcopy
+
+#Function to convert values to text
+convertFN = function(x) {
+    ifelse(x < 7.0, "negative", "positive")
+}
+
+# Substitute missing values
+missingValues = function(x) {
+    ifelse(is.na(x), mean(x, na.rm = TRUE), x)
+}
+
+df$num_critic_for_reviews = missingValues(df$num_critic_for_reviews)
+df$duration = missingValues(df$duration)
+df$director_facebook_likes = missingValues(df$director_facebook_likes)
+df$actor_3_facebook_likes = missingValues(df$actor_3_facebook_likes)
+df$actor_1_facebook_likes = missingValues(df$actor_1_facebook_likes)
+df$gross = missingValues(df$gross)
+df$facenumber_in_poster = missingValues(df$facenumber_in_poster)
+df$num_user_for_reviews = missingValues(df$num_user_for_reviews)
+df$budget = missingValues(df$budget)
+df$title_year = missingValues(df$title_year)
+df$actor_2_facebook_likes = missingValues(df$actor_2_facebook_likes)
+df$aspect_ratio = missingValues(df$aspect_ratio)
+
+# Test if any missing values
+colSums(is.na(df))
+
+
+
+#Call Function
+df$Label = convertFN(df$Label)
+
+# Function to display names of columns with missing values
+naCols = function(x) {
+    y = sapply(x, function(xx) any(is.na(xx)))
+    names(y[y])
+
+
+
+# Create graph
+imdbGraph = function(df,
+    firstyear = 1,
+    lastyear = 3000,
+    genre = FALSE,
+    minscore = 0,
+    maxscore = 10) {
+    if (is.character(genre)) {
+        df = df[grep(genre, df$genres),]
+    }
+    df = subset(df,
+        df$title_year >= firstyear &
+        df$title_year <= lastyear &
+        df$imdb_score <= maxscore &
+        df$imdb_score >= minscore)
+    edges = data.frame(df$id,
+        df$actor_1_name,
+        df$actor_2_name,
+        df$actor_3_name) %>%
+    gather(actornum, to, - df.id) %>%
+    rename(from = df.id) %>%
+    select(-actornum) %>%
+    mutate(from = as.character(from))
+    movie = select(df,
+        - actor_1_name,
+        - actor_2_name,
+        - actor_3_name)
+    actor = data.frame(actor = unique(edges$to))
+    nodes = rbind(
+        data.frame(id = movie$id,
+        label = df$movie_title,
+        shape = 'square',
+        title = paste0('Line1', '<br>', 'Line2'),
+        size = 10,
+        color = 'orange',
+        imdb_score = df$imdb_score,
+        revenues = df$gross,
+        budget = df$budget
+        ),
+        data.frame(id = actor$actor,
+            label = actor$actor,
+            shape = 'none',
+            title = paste0('Line', '<br>', 'Line2'),
+            size = 10,
+            color = 'lightblue',
+            imdb_score = NA,
+            revenues = NA,
+            budget = NA
+            )
+)
+    return(graph_from_data_frame(edges, directed = F, vertices = nodes))
+}
+selectbest = function(full_graph, topN) {
+    V(full_graph)$closeness_norm = closeness(full_graph, normalized = T)
+    V(full_graph)$betweenness_norm = betweenness(full_graph)
+
+    full_graph_nodes = get.data.frame(full_graph, what = "vertices") %>%
+    top_n(topN, betweenness_norm)
+
+    full_graph_edges = get.data.frame(full_graph, what = "edges") %>%
+    filter(from %in% full_graph_nodes$name | to %in% full_graph_nodes$name)
+    full_graph_nodes = get.data.frame(full_graph, what = "vertices") %>%
+    filter(name %in% full_graph_edges$from | name %in% full_graph_edges$to)
+    full_graph_nodes = full_graph_nodes %>%
+    mutate(title = ifelse(full_graph_nodes$color == 'lightblue', "",
+                          paste0('IMDB score: ', imdb_score, '<br>',
+                              'Revenues (M$): ', round(revenues / 1000000, digits = 1), '<br>',
+                              'Budget (M$): ', round(budget / 1000000, digits = 1)))
+           ) %>%
+    mutate(id = name)
+
+
+    return(list(full_graph_nodes, full_graph_edges))
+}
+
+
+best_graph = imdbGraph(df, minscore = 8)
+best_output = selectbest(best_graph, 50)
+visNetwork(best_output[[1]], best_output[[2]], width = "100%")
+
+worst_graph = imdbGraph(df, maxscore = 5)
+worst_output = selectbest(worst_graph, 50)
+visNetwork(worst_output[[1]], worst_output[[2]], width = "100%")
